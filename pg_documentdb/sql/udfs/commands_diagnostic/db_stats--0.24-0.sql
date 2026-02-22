@@ -9,6 +9,15 @@ COMMENT ON FUNCTION __API_SCHEMA_V2__.db_stats(text, float8, bool)
     IS 'Returns storage statistics for a given database';
 
 
+CREATE OR REPLACE FUNCTION __API_SCHEMA_V2__.db_stats(
+    IN p_commandspec __CORE_SCHEMA__.bson DEFAULT NULL)
+RETURNS __CORE_SCHEMA__.bson
+LANGUAGE C
+AS 'MODULE_PATHNAME', $function$command_db_stats_from_bson_spec$function$;
+COMMENT ON FUNCTION __API_SCHEMA_V2__.db_stats(__CORE_SCHEMA__.bson)
+    IS 'Returns storage statistics for a given database';
+
+
 CREATE OR REPLACE FUNCTION __API_SCHEMA_INTERNAL_V2__.db_stats_worker(
     IN p_collection_ids bigint[])
 RETURNS __CORE_SCHEMA__.bson
