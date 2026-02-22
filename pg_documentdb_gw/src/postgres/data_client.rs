@@ -251,7 +251,6 @@ pub trait PgDataClient: Send + Sync {
     async fn execute_db_stats(
         &self,
         request_context: &RequestContext<'_>,
-        scale: f64,
         connection_context: &ConnectionContext,
     ) -> Result<Response>;
 

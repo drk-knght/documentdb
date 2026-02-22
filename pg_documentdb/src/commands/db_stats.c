@@ -35,6 +35,7 @@
 PG_FUNCTION_INFO_V1(command_db_stats);
 PG_FUNCTION_INFO_V1(command_db_stats_worker);
 PG_FUNCTION_INFO_V1(command_list_databases);
+PG_FUNCTION_INFO_V1(command_db_stats_from_bson_spec);
 
 
 /*
@@ -60,6 +61,7 @@ typedef struct
 /* Forward Declaration */
 
 static pgbson * DbStatsCoordinator(Datum databaseName, int32 scale);
+static pgbson *ExecuteDbStatsWithScale(Datum databaseName, double scale);
 static pgbson * DbStatsWorker(void *fcinfoPointer);
 static void BuildResultData(Datum databaseName, DbStatsResult *result, int32 scale);
 static pgbson * BuildResponseMessage(DbStatsResult *result);
@@ -104,20 +106,102 @@ command_db_stats(PG_FUNCTION_ARGS)
 
 	/* We don't yet support freeStrorage statistics, so skip reading freeStorage value */
 
-	ReportFeatureUsage(FEATURE_COMMAND_DBSTATS);
-
-	/* Truncate the fractional part of the scale */
-	scaleDouble = trunc(scaleDouble);
-
-	/* The 'scale' value is capped to int32 for compatibility with expected behavior */
-	int32 scale = scaleDouble > INT32_MAX ? INT32_MAX :
-				  scaleDouble < INT32_MIN ? INT32_MIN :
-				  (int32) scaleDouble;
-
-	pgbson *response = DbStatsCoordinator(databaseName, scale);
+	pgbson *response = ExecuteDbStatsWithScale(databaseName, scaleDouble);
 	PG_RETURN_POINTER(response);
 }
 
+/*
+ * command_db_stats_from_bson_spec is the implementation of the dbStats command
+ * that accepts a BSON specification document containing the database name,
+ * scale factor, and other optional parameters.
+ */
+Datum command_db_stats_from_bson_spec(PG_FUNCTION_ARGS) 
+{
+	if (PG_NARGS() != 1) 
+	{
+		ereport(ERROR, (errmsg("Invalid number of arguments for db_stats")));
+	}
+	
+	if (get_fn_expr_argtype(fcinfo->flinfo, 0) != BsonTypeId()) 
+	{
+		ereport(ERROR, (errmsg("Invalid argument type passed for db_stats")));
+	}
+	
+	if (PG_ARGISNULL(0)) 
+	{
+		ereport(ERROR, (errmsg("Passed BSON document cannot be null")));
+	}
+	
+	pgbson *commandSpec = NULL;
+	Datum databaseName = 0;
+	double scaleDouble = 1.0;
+	
+	commandSpec = PG_GETARG_PGBSON(0);
+	if (commandSpec != NULL) 
+	{
+		bson_iter_t iter;
+		PgbsonInitIterator(commandSpec, &iter);
+	
+		while (bson_iter_next(&iter)) 
+		{
+			const char *key = bson_iter_key(&iter);
+			if (strcmp(key, "$db") == 0) 
+			{
+				/* Database name */
+				if (BSON_ITER_HOLDS_UTF8(&iter)) 
+				{
+					uint32_t len;
+					const char *dbName = bson_iter_utf8(&iter, &len);
+					databaseName = PointerGetDatum(cstring_to_text_with_len(dbName, len));
+				}
+			} 
+			else if (strcmp(key, "scale") == 0) 
+			{
+				/* Scale Factor */
+				scaleDouble = BsonValueAsDouble(bson_iter_value(&iter));
+			} 
+			else if (strcmp(key, "freeStorage") == 0) 
+			{
+				/* Currently freeStorage is not supported, so just ignore it */
+			} 
+			else if (strcmp(key, "dbStats") == 0)
+			{
+				/* ignore */
+			}
+			else if (!IsCommonSpecIgnoredField(key)) 
+			{
+				ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+								errmsg("%s is an unrecognized field name", key)));
+			}
+		}
+	}
+	
+	pgbson *response = ExecuteDbStatsWithScale(databaseName, scaleDouble);
+	
+	PG_RETURN_POINTER(response);
+}
+
+/*
+ * ExecuteDbStatsWithScale executes the dbStats command with the given database
+ * name and scale factor. It reports feature usage, normalizes the scale value
+ * to int32, and returns the response from the coordinator.
+ */
+static pgbson *ExecuteDbStatsWithScale(Datum databaseName, double scaleDouble) 
+{
+	ReportFeatureUsage(FEATURE_COMMAND_DBSTATS);
+	
+	/* Truncate the fractional part of the scale */
+	scaleDouble = trunc(scaleDouble);
+	
+	/* The 'scale' value is capped to int32 for compatibility with expected
+	* behavior */
+	int32 scale = scaleDouble > INT32_MAX ? INT32_MAX
+					: scaleDouble < INT32_MIN ? INT32_MIN
+											: (int32)scaleDouble;
+	
+	pgbson *response = DbStatsCoordinator(databaseName, scale);
+	return response;
+}
 
 /*
  * Top level entry point for dbStats when executing on the worker node.

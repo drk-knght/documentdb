@@ -911,10 +911,9 @@ impl PgDataClient for DocumentDBDataClient {
     async fn execute_db_stats(
         &self,
         request_context: &RequestContext<'_>,
-        scale: f64,
         connection_context: &ConnectionContext,
     ) -> Result<Response> {
-        let (_, request_info, request_tracker) = request_context.get_components();
+        let (request, request_info, request_tracker) = request_context.get_components();
         let db_stats_rows = self
             .pull_connection(connection_context)
             .await?
@@ -923,8 +922,8 @@ impl PgDataClient for DocumentDBDataClient {
                     .service_context
                     .query_catalog()
                     .db_stats(),
-                &[Type::TEXT, Type::FLOAT8, Type::BOOL],
-                &[&request_info.db()?.to_string(), &scale, &false],
+                &[Type::BYTEA], 
+                &[&PgDocument(request.document())], 
                 Timeout::transaction(request_info.max_time_ms),
                 request_tracker,
             )

@@ -216,15 +216,8 @@ pub async fn process_db_stats(
     connection_context: &ConnectionContext,
     pg_data_client: &impl PgDataClient,
 ) -> Result<Response> {
-    // allow floats and ints, the backend will truncate
-    let scale = if let Some(scale) = request_context.payload.document().get("scale")? {
-        convert_to_scale(scale)?
-    } else {
-        1.0
-    };
-
     pg_data_client
-        .execute_db_stats(request_context, scale, connection_context)
+        .execute_db_stats(request_context, connection_context)
         .await
 }
 
