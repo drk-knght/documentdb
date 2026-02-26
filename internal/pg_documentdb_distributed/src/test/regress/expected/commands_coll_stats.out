@@ -1,0 +1,142 @@
+SET search_path TO documentdb_api,documentdb_core;
+SET citus.next_shard_id TO 990000;
+SET documentdb.next_collection_id TO 9900;
+SET documentdb.next_collection_index_id TO 9900;
+-- Setup: Create collections with different data sizes
+SELECT COUNT(*) FROM (SELECT documentdb_api.insert_one('coll_stats_test_db', 'test_coll1', FORMAT('{ "_id": %s, "a": %s, "b": "test_string_%s" }', i, i, i)::documentdb_core.bson) FROM generate_series(1, 1000) i) innerQuery;
+NOTICE:  creating collection
+ count 
+---------------------------------------------------------------------
+  1000
+(1 row)
+
+SELECT COUNT(*) FROM (SELECT documentdb_api.insert_one('coll_stats_test_db', 'test_coll2', FORMAT('{ "_id": %s, "x": %s, "y": %s }', i, i, i * 2)::documentdb_core.bson) FROM generate_series(1, 500) i) innerQuery;
+NOTICE:  creating collection
+ count 
+---------------------------------------------------------------------
+   500
+(1 row)
+
+SELECT COUNT(*) FROM (SELECT documentdb_api.insert_one('coll_stats_test_db', 'test_coll3', FORMAT('{ "_id": %s, "data": %s }', i, i)::documentdb_core.bson) FROM generate_series(1, 100) i) innerQuery;
+NOTICE:  creating collection
+ count 
+---------------------------------------------------------------------
+   100
+(1 row)
+
+-- Create indexes on test collections
+SELECT documentdb_api_internal.create_indexes_non_concurrently('coll_stats_test_db', '{ "createIndexes": "test_coll1", "indexes": [ { "key": { "a": 1 }, "name": "a_1" }]}', TRUE);
+                                                                                                   create_indexes_non_concurrently                                                                                                    
+---------------------------------------------------------------------
+ { "raw" : { "defaultShard" : { "numIndexesBefore" : { "$numberInt" : "1" }, "numIndexesAfter" : { "$numberInt" : "2" }, "createdCollectionAutomatically" : false, "ok" : { "$numberInt" : "1" } } }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+SELECT documentdb_api_internal.create_indexes_non_concurrently('coll_stats_test_db', '{ "createIndexes": "test_coll2", "indexes": [ { "key": { "x": 1 }, "name": "x_1" }, { "key": { "y": 1 }, "name": "y_1" }]}', TRUE);
+                                                                                                   create_indexes_non_concurrently                                                                                                    
+---------------------------------------------------------------------
+ { "raw" : { "defaultShard" : { "numIndexesBefore" : { "$numberInt" : "1" }, "numIndexesAfter" : { "$numberInt" : "3" }, "createdCollectionAutomatically" : false, "ok" : { "$numberInt" : "1" } } }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Analyze for deterministic stats
+ANALYZE;
+-- Test 1: Basic coll_stats with BSON spec (collStats command format)
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db" }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                                    coll_stats                                                                                                                                                                                                                                                                                     
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "90000" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "139264" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "147456" }, "totalSize" : { "$numberInt" : "286720" }, "indexSizes" : { "_id_" : { "$numberLong" : "57344" }, "a_1" : { "$numberLong" : "90112" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 2: coll_stats with scale parameter in BSON spec
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 1 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                                    coll_stats                                                                                                                                                                                                                                                                                     
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "90000" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "139264" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "147456" }, "totalSize" : { "$numberInt" : "286720" }, "indexSizes" : { "_id_" : { "$numberLong" : "57344" }, "a_1" : { "$numberLong" : "90112" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 1024 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                             coll_stats                                                                                                                                                                                                                                                                             
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "87" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "136" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "144" }, "totalSize" : { "$numberInt" : "280" }, "indexSizes" : { "_id_" : { "$numberLong" : "56" }, "a_1" : { "$numberLong" : "88" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "1024" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 3: coll_stats for collection with multiple indexes
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll2", "$db": "coll_stats_test_db" }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                                                      coll_stats                                                                                                                                                                                                                                                                                                      
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll2", "size" : { "$numberInt" : "29000" }, "count" : { "$numberInt" : "1000" }, "avgObjSize" : { "$numberInt" : "29" }, "storageSize" : { "$numberInt" : "81920" }, "nindexes" : { "$numberInt" : "3" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "139264" }, "totalSize" : { "$numberInt" : "221184" }, "indexSizes" : { "_id_" : { "$numberLong" : "40960" }, "x_1" : { "$numberLong" : "49152" }, "y_1" : { "$numberLong" : "49152" } }, "analyzedCount" : { "$numberInt" : "500" }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 4: coll_stats for smaller collection
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll3", "$db": "coll_stats_test_db" }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                               coll_stats                                                                                                                                                                                                                                                               
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll3", "size" : { "$numberInt" : "5000" }, "count" : { "$numberInt" : "200" }, "avgObjSize" : { "$numberInt" : "25" }, "storageSize" : { "$numberInt" : "16384" }, "nindexes" : { "$numberInt" : "1" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "16384" }, "totalSize" : { "$numberInt" : "32768" }, "indexSizes" : { "_id_" : { "$numberLong" : "16384" } }, "analyzedCount" : { "$numberInt" : "100" }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 5: coll_stats with different scale values
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 2 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                                   coll_stats                                                                                                                                                                                                                                                                                    
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "45000" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "69632" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "73728" }, "totalSize" : { "$numberInt" : "143360" }, "indexSizes" : { "_id_" : { "$numberLong" : "28672" }, "a_1" : { "$numberLong" : "45056" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "2" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 100 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                               coll_stats                                                                                                                                                                                                                                                                                
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "900" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "1392" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "1474" }, "totalSize" : { "$numberInt" : "2867" }, "indexSizes" : { "_id_" : { "$numberLong" : "573" }, "a_1" : { "$numberLong" : "901" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "100" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 2147483647 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                           coll_stats                                                                                                                                                                                                                                                                            
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "0" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "0" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "0" }, "totalSize" : { "$numberInt" : "0" }, "indexSizes" : { "_id_" : { "$numberLong" : "0" }, "a_1" : { "$numberLong" : "0" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "2147483647" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 6: coll_stats for non-existent collection (error case)
+SELECT documentdb_api.coll_stats('{ "collStats": "non_existent_coll", "$db": "coll_stats_test_db" }'::documentdb_core.bson);
+                                                                                                                                                                                   coll_stats                                                                                                                                                                                   
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.non_existent_coll", "size" : { "$numberInt" : "0" }, "count" : { "$numberInt" : "0" }, "storageSize" : { "$numberInt" : "0" }, "totalSize" : { "$numberInt" : "0" }, "nindexes" : { "$numberInt" : "0" }, "totalIndexSize" : { "$numberInt" : "0" }, "indexSizes" : {  }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 7: coll_stats for non-existent database (error case)
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "non_existent_db" }'::documentdb_core.bson);
+                                                                                                                                                                              coll_stats                                                                                                                                                                              
+---------------------------------------------------------------------
+ { "ns" : "non_existent_db.test_coll1", "size" : { "$numberInt" : "0" }, "count" : { "$numberInt" : "0" }, "storageSize" : { "$numberInt" : "0" }, "totalSize" : { "$numberInt" : "0" }, "nindexes" : { "$numberInt" : "0" }, "totalIndexSize" : { "$numberInt" : "0" }, "indexSizes" : {  }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Test 8: coll_stats with invalid scale (error cases)
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 0 }'::documentdb_core.bson);
+ERROR:  The BSON field 'scale' must have a value of at least 1, but the provided value is '0'.
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": -1 }'::documentdb_core.bson);
+ERROR:  The BSON field 'scale' must have a value of at least 1, but the provided value is '-1'.
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": -100 }'::documentdb_core.bson);
+ERROR:  The BSON field 'scale' must have a value of at least 1, but the provided value is '-100'.
+-- Test 9: coll_stats with missing required fields (error cases)
+SELECT documentdb_api.coll_stats('{ "$db": "coll_stats_test_db" }'::documentdb_core.bson);
+ERROR:  collStats field is required in command specification
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1" }'::documentdb_core.bson);
+ERROR:  $db field is required in command specification
+-- Test 10: coll_stats with fractional scale values
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 1.5 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                                    coll_stats                                                                                                                                                                                                                                                                                     
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "90000" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "139264" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "147456" }, "totalSize" : { "$numberInt" : "286720" }, "indexSizes" : { "_id_" : { "$numberLong" : "57344" }, "a_1" : { "$numberLong" : "90112" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "1" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+SELECT documentdb_api.coll_stats('{ "collStats": "test_coll1", "$db": "coll_stats_test_db", "scale": 1024.99 }'::documentdb_core.bson);
+                                                                                                                                                                                                                                                                             coll_stats                                                                                                                                                                                                                                                                             
+---------------------------------------------------------------------
+ { "ns" : "coll_stats_test_db.test_coll1", "size" : { "$numberInt" : "87" }, "count" : { "$numberInt" : "2000" }, "avgObjSize" : { "$numberInt" : "45" }, "storageSize" : { "$numberInt" : "136" }, "nindexes" : { "$numberInt" : "2" }, "indexBuilds" : [  ], "totalIndexSize" : { "$numberInt" : "144" }, "totalSize" : { "$numberInt" : "280" }, "indexSizes" : { "_id_" : { "$numberLong" : "56" }, "a_1" : { "$numberLong" : "88" } }, "analyzedCount" : { "$numberInt" : "1000" }, "scaleFactor" : { "$numberInt" : "1024" }, "ok" : { "$numberInt" : "1" } }
+(1 row)
+
+-- Cleanup
+SET client_min_messages TO WARNING;
+SELECT documentdb_api.drop_database('coll_stats_test_db');
+ drop_database 
+---------------------------------------------------------------------
+ 
+(1 row)
+
+SET client_min_messages TO DEFAULT;

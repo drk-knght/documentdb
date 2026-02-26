@@ -34,6 +34,7 @@ extern bool UsePgStatsLiveTuplesForCount;
 extern bool ForceCollStatsDataCollection;
 
 PG_FUNCTION_INFO_V1(command_coll_stats);
+PG_FUNCTION_INFO_V1(command_coll_stats_from_bson_spec);
 PG_FUNCTION_INFO_V1(command_coll_stats_worker);
 PG_FUNCTION_INFO_V1(command_coll_stats_aggregation);
 
@@ -77,6 +78,7 @@ static int64 GetDocumentsCountRunTime(MongoCollection *collection);
 static int32 GetAverageColumnWidthRuntime(MongoCollection *collection);
 static int32 GetAverageColumnWidthSampled(MongoCollection *collection);
 static pgbson * BuildResponseMessage(CollStatsResult *result);
+static pgbson *ExecuteCollStatsWithScale(Datum databaseName, Datum collectionName, double scaleDouble);
 static void WriteCoreStorageStats(CollStatsResult *result, pgbson_writer *writer);
 static pgbson * BuildEmptyResponseMessage(CollStatsResult *result);
 static void BuildResultData(Datum databaseName, Datum collectionName,
@@ -125,20 +127,118 @@ command_coll_stats(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errmsg("scale cannot be NULL")));
 	}
 	double scaleDouble = PG_GETARG_FLOAT8(2);
+	
+	pgbson *response = ExecuteCollStatsWithScale(databaseName, collectionName, scaleDouble); 
+	PG_RETURN_POINTER(response);
+}
 
+Datum
+command_coll_stats_from_bson_spec(PG_FUNCTION_ARGS)
+{
+	if (PG_NARGS() != 1) 
+	{
+		ereport(ERROR, (errmsg("Invalid number of arguments for collStats")));
+	}
+	
+	if (get_fn_expr_argtype(fcinfo->flinfo, 0) != BsonTypeId()) 
+	{
+		ereport(ERROR, (errmsg("Invalid argument type passed for collStats")));
+	}
+ 
+	if (PG_ARGISNULL(0)) 
+	{
+		ereport(ERROR, (errmsg("Passed BSON document cannot be null")));
+	}
+ 
+	pgbson *commandSpec = PG_GETARG_PGBSON(0);
+ 
+	bson_iter_t commandIter;
+	PgbsonInitIterator(commandSpec, &commandIter);
+ 
+	Datum collectionName = 0;
+	Datum databaseName = 0;
+	double scaleDouble = 1.0;
+ 
+	bool foundCollStats = false;
+	bool foundDb = false;
+ 
+	while(bson_iter_next(&commandIter))
+	{
+		const char *key = bson_iter_key(&commandIter);
+ 
+		if(strcmp(key, "collStats") == 0)
+		{
+			if (BSON_ITER_HOLDS_UTF8(&commandIter))
+			{
+				uint32_t len;
+				const char *collName = bson_iter_utf8(&commandIter, &len);
+				collectionName = PointerGetDatum(cstring_to_text_with_len(collName, len));
+				foundCollStats = true;
+			}
+		}
+		else if(strcmp(key, "$db") == 0)
+		{
+			if (BSON_ITER_HOLDS_UTF8(&commandIter))
+			{
+				uint32_t len;
+				const char *dbName = bson_iter_utf8(&commandIter, &len);
+				databaseName = PointerGetDatum(cstring_to_text_with_len(dbName, len));
+				foundDb = true;
+			}
+		}
+		else if(strcmp(key, "scale") == 0)
+		{
+			if(!BsonValueIsNumber(bson_iter_value(&commandIter)))
+			{
+				ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+								errmsg("scale field must be a number")));
+			}
+			scaleDouble = BsonValueAsDouble(bson_iter_value(&commandIter));
+		}
+		else if (!IsCommonSpecIgnoredField(key)) 
+		{
+			ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+							errmsg("%s is an unrecognized field name", key)));
+		}
+	}
+ 
+	if(!foundCollStats)
+	{
+		ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+						errmsg("collStats field is required in command specification")));
+	}
+ 
+	if(!foundDb)
+	{
+		ereport(ERROR, (errcode(ERRCODE_DOCUMENTDB_BADVALUE),
+						errmsg("$db field is required in command specification")));
+	}
+ 
+	pgbson *response = ExecuteCollStatsWithScale(databaseName, collectionName, scaleDouble);
+	PG_RETURN_POINTER(response);
+}
+ 
+/*
+ * ExecuteCollStatsWithScale executes the collStats command with the given database
+ * name, collection name, and scale factor. It reports feature usage, normalizes the scale value
+ * to int32, and returns the response from the coordinator.
+ */
+static pgbson *
+ExecuteCollStatsWithScale(Datum databaseName, Datum collectionName, double scaleDouble) 
+{
 	ReportFeatureUsage(FEATURE_COMMAND_COLLSTATS);
-
+ 
 	/* Truncate the fractional part of the scale */
 	scaleDouble = trunc(scaleDouble);
-
+ 
 	/* The 'scale' value is capped to int32 for compatibility with expected behavior */
 	int32 scale = scaleDouble > INT32_MAX ? INT32_MAX :
 				  scaleDouble < INT32_MIN ? INT32_MIN :
 				  (int32) scaleDouble;
-
+ 
 	pgbson *response = CollStatsCoordinator(databaseName, collectionName, scale);
-	PG_RETURN_POINTER(response);
-}
+	return response;
+} 
 
 
 /*
